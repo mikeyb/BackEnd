@@ -101,7 +101,9 @@ async def update_order(order):
                     Web3.toHex(order["signature"]),
                     amount_fill, available_volume)
 
+EMPTY_BYTES32 = b'0' * 32
 def order_as_args(order):
+    order = dict(order)
     return (
         Web3.toHex(order["token_get"]),
         Web3.toInt(order["amount_get"]),
@@ -110,6 +112,6 @@ def order_as_args(order):
         Web3.toInt(order["expires"]),
         Web3.toInt(order["nonce"]),
         Web3.toHex(order["user"]),
-        order["v"],
-        order["r"],
-        order["s"])
+        order.get("v", 0),
+        order.get("r", EMPTY_BYTES32),
+        order.get("s", EMPTY_BYTES32))

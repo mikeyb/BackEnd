@@ -1,7 +1,7 @@
 from ..app import App
 import asyncio
-from ..config import ED_CONTRACT_ADDR, ED_CONTRACT_ABI, WS_PROVIDER_URL
-from ..src.contract_event_recorders import record_cancel, record_deposit, process_trade, record_withdraw
+from ..config import ED_CONTRACT_ADDR, ED_CONTRACT_ABI, HTTP_PROVIDER_URL, WS_PROVIDER_URL
+from ..src.contract_event_recorders import record_cancel, record_deposit, process_order, process_trade, record_withdraw
 from ..src.contract_event_utils import block_timestamp
 import json
 import logging
@@ -19,6 +19,7 @@ filter_set = WebsocketFilterSet(contract)
 filter_set.on_event('Trade', process_trade)
 filter_set.on_event('Deposit', record_deposit)
 filter_set.on_event('Withdraw', record_withdraw)
+filter_set.on_event('Order', process_order)
 filter_set.on_event('Cancel', record_cancel)
 
 def make_eth_subscribe(topic_filter):
@@ -70,10 +71,19 @@ async def main():
                     break
             else:
                 subscription_results = json.loads(message)["params"]["result"]
-                if len(subscription_results) > 0:
-                    log_latency(subscription_results[0])
-                for subscription_result in subscription_results:
-                    await filter_set.deliver(subscription_result["topics"][0], subscription_result)
+                if isinstance(subscription_results, list):
+                    #Parity websocket returns multiple result at a time: [ {'address': '0x8d12a197cb00d4747a1fe03395095ce2a5cc6819', 'topics': ... }, {'address': '0x8d ... } ]
+                    if len(subscription_results) > 0:
+                        log_latency(subscription_results[0])
+                    for subscription_result in subscription_results:
+                        await filter_set.deliver(subscription_result["topics"][0], subscription_result)
+                else:
+                    #Geth websocket only returns one result at a time: {'address': '0x8d12a197cb00d4747a1fe03395095ce2a5cc6819', 'topics': [... }
+                    subscription_result = subscription_results
+                    if len(subscription_results) > 0:
+                        log_latency(subscription_result)
+                        await filter_set.deliver(subscription_result["topics"][0], subscription_result)
+                    
         print("Contract observer disconnected")
 
 if __name__ == "__main__":

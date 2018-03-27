@@ -16,18 +16,22 @@ from time import time
 from ..src.utils import parse_insert_status
 from web3 import Web3
 from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+from ..src.order_message_validator import OrderMessageValidatorEtherdelta
+from ..src.order_signature import order_signature_valid
+from ..constants import ZERO_ADDR
 
 logger = logging.getLogger('etherdelta_observer')
 logger.setLevel(logging.DEBUG)
 
-ZERO_ADDR = "0x0000000000000000000000000000000000000000"
-
 CHECK_TOKENS_PER_PONG = 2
 market_queue = Queue()
-# TODO: Populate from our own DB
-with open("tokens.json") as f:
-    for token in json.load(f):
+
+def fill_queue():
+    for token in App().tokens():
         market_queue.put(token["addr"].lower())
+    logger.info("%i tokens added to market queue", len(App().tokens()))
+
+fill_queue()
 
 web3 = App().web3
 contract = web3.eth.contract(ED_CONTRACT_ADDR, abi=ED_CONTRACT_ABI)
@@ -41,10 +45,48 @@ async def on_error(io_client, event, error):
 async def on_disconnect(io_client, event):
     logger.info("ED API client disconnected from %s", io_client.ws_url)
 
+def validate_order(order, current_block=None):
+    """
+    Validates an order dictionary. Returns True if the order is valid, False otherwise.
+    """
+
+    v = OrderMessageValidatorEtherdelta()
+    if not v.validate(order):
+        error_msg = "Invalid message format"
+        details_dict = dict(data=order, errors=v.errors)
+        logger.warning("ED order rejected: %s: %s", error_msg, details_dict)
+        return False
+
+    order_validated = v.document # Get data with validated and coerced values
+
+    # Require one side of the order to be base currency
+    if order_validated["tokenGet"] != ZERO_ADDR and order_validated["tokenGive"] != ZERO_ADDR:
+        error_msg = "Cannot post order with pair {}-{}: neither is a base currency".format(order_validated["tokenGet"], order_validated["tokenGive"])
+        logger.warning("ED order rejected: %s", error_msg)
+        return
+
+    # Require order to be non-expired
+    if current_block and order_validated["expires"] <= current_block:
+        error_msg = "Cannot record order because it has already expired"
+        details_dict = { "blockNumber": current_block, "expires": order_validated["expires"], "date": datetime.utcnow().isoformat() }
+        logger.warning("ED Order rejected: %s: %s", error_msg, details_dict)
+        return False
+
+    # Require a valid signature
+    if not order_signature_valid(order_validated):
+        logger.warning("ED Order rejected: Invalid signature: raw_order = %s, order = %s", order, order_validated)
+        return False
+    return True
+
+from functools import partial
 async def process_orders(orders):
+    current_block = web3.eth.blockNumber # TODO: Introduce a strict timeout here; on failure allow order (todo copied from websocket_server.py)
+
     not_deleted_filter = lambda order: "deleted" not in order or not order["deleted"]
+    invalid_orders_filter = partial(validate_order, current_block=current_block)
+
     logger.info("Processing %i orders", len(orders))
-    orders = list(filter(not_deleted_filter, orders))
+    orders = list(filter(invalid_orders_filter, filter(not_deleted_filter, orders)))
     logger.debug("Filtered orders: %i", len(orders))
 
     for order in orders:
@@ -69,14 +111,14 @@ async def on_pong(io_client, event):
     # await io_client.emit("getMarket", { "token": ZERO_ADDR })
     for _ in range(CHECK_TOKENS_PER_PONG):
         try:
-            token = market_queue.get()
+            token = market_queue.get_nowait()
         except QueueEmpty:
+            fill_queue()
             break # better luck next time!
         else:
             logger.info("Query token %s", token)
             await io_client.emit("getMarket", { "token": token })
             await asyncio.sleep(4)
-            market_queue.put(token)
 
 INSERT_ORDER_STMT = """
     INSERT INTO orders

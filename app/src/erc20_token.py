@@ -1,16 +1,17 @@
+from ..app import App
 from ..config import HTTP_PROVIDER_URL
 from decimal import Decimal
 import json
 from web3 import Web3, HTTPProvider
+from ..constants import ZERO_ADDR
 
 class ERC20Token:
     cache = {}
 
     def __init__(self, addr):
         if not ERC20Token.cache:
-            with open("tokens.json") as f:
-                ERC20Token.cache = dict([(t["addr"].lower(), t["decimals"])
-                                            for t in json.load(f)])
+            ERC20Token.cache = dict([(t["addr"].lower(), t["decimals"])
+                                        for t in App().tokens()])
 
         if isinstance(addr, bytes):
             addr = Web3.toHex(addr)
@@ -36,7 +37,7 @@ class ERC20Token:
     def decimals(self):
         cache = ERC20Token.cache
 
-        if self.addr == "0x0000000000000000000000000000000000000000":
+        if self.addr == ZERO_ADDR:
             return 18 # Not an actual ERC20 token
         elif self.addr not in cache:
             cache[self.addr] = self._call_decimals()

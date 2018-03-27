@@ -4,25 +4,22 @@ from decimal import getcontext, InvalidOperation, DivisionByZero
 import logging
 from queue import Queue, Empty as QueueEmpty
 from web3 import Web3
-
 from ..app import App
 from ..src.erc20_token import ERC20Token
+from ..constants import ZERO_ADDR, ZERO_ADDR_BYTES, FILTER_ORDERS_UNDER_ETH
 
 logger = logging.getLogger('services.ticker')
 logger.setLevel(logging.DEBUG)
 
 getcontext().prec = 8
 
-# TODO: finally extract these into constants
-ZERO_ADDR = "0x0000000000000000000000000000000000000000"
-ZERO_ADDR_BYTES = Web3.toBytes(hexstr=ZERO_ADDR)
-
 tokens_queue = Queue()
-# TODO: Populate from our own DB
-with open("tokens.json") as f:
-    import json
-    for token in json.load(f):
+def fill_queue():
+    for token in App().tokens():
         tokens_queue.put(token["addr"].lower())
+    logger.info("%i tokens added to ticker queue", len(App().tokens()))
+
+fill_queue()
 
 async def get_trades_volume(token_hexstr):
     """
@@ -38,10 +35,11 @@ async def get_trades_volume(token_hexstr):
                 COALESCE(SUM(CASE WHEN "token_get" = $1 THEN "amount_give" ELSE "amount_get" END), 0) AS quote_volume,
                 COALESCE(SUM(CASE WHEN "token_get" = $1 THEN "amount_get" ELSE "amount_give" END), 0) AS base_volume
             FROM trades
-            WHERE ("token_give" = $2 OR "token_get" = $2)
+            WHERE (("token_get" = $1 AND "token_give" = $2)
+                    OR ("token_give" = $1 AND "token_get" = $2))
                 AND "date" >= NOW() - '1 day'::INTERVAL
             """,
-            Web3.toBytes(hexstr=ZERO_ADDR), # TODO: We can probably do with just token address
+            Web3.toBytes(hexstr=ZERO_ADDR),
             Web3.toBytes(hexstr=token_hexstr))
 
 async def get_last_trade(token_hexstr):
@@ -53,16 +51,21 @@ async def get_last_trade(token_hexstr):
         return await conn.fetchrow("""
             SELECT *
             FROM trades
-            WHERE ("token_give" = $1 OR "token_get" = $1)
+            WHERE (("token_get" = $1 AND "token_give" = $2)
+                    OR ("token_give" = $1 AND "token_get" = $2))
                 AND ("amount_get" > 0 AND "amount_give" > 0)
             ORDER BY "date" DESC
             LIMIT 1
-            """, Web3.toBytes(hexstr=token_hexstr))
+            """,
+            Web3.toBytes(hexstr=ZERO_ADDR),
+            Web3.toBytes(hexstr=token_hexstr))
 
 async def get_market_spread(token_hexstr, current_block):
     """
     Given a token address, returns the lowest ask and the highest bid.
     """
+    
+    base_contract = ERC20Token(ZERO_ADDR)
 
     async with App().db.acquire_connection() as conn:
         return await conn.fetchrow("""
@@ -74,6 +77,11 @@ async def get_market_spread(token_hexstr, current_block):
                         AND "expires" > $3
                         AND ("amount_get" > 0 AND "amount_give" > 0)
                         AND ("available_volume" IS NULL OR "available_volume" > 0)
+                        AND (CASE WHEN "available_volume" IS NULL THEN
+                                amount_get * (amount_give / amount_get::numeric) > $4
+                            ELSE
+                                available_volume * (amount_give / amount_get::numeric) > $4
+                            END)
                     ) AS bid,
                 (SELECT MIN(amount_get / amount_give::numeric)
                     FROM orders
@@ -82,11 +90,17 @@ async def get_market_spread(token_hexstr, current_block):
                         AND "expires" > $3
                         AND ("amount_get" > 0 AND "amount_give" > 0)
                         AND ("available_volume" IS NULL OR "available_volume" > 0)
+                        AND (CASE WHEN "available_volume" IS NULL THEN
+                                amount_give * (amount_get / amount_give::numeric) > $4
+                            ELSE
+                                available_volume * (amount_get / amount_give::numeric) > $4
+                            END)
                     ) AS ask
             """,
             ZERO_ADDR_BYTES,
             Web3.toBytes(hexstr=token_hexstr),
-            current_block)
+            current_block,
+            base_contract.normalize_value(FILTER_ORDERS_UNDER_ETH))
 
 async def save_ticker(ticker_info):
     async with App().db.acquire_connection() as conn:
@@ -173,10 +187,13 @@ async def update_ticker(token_addr):
 
 async def main():
     while True:
-        token = tokens_queue.get()
-        await update_ticker(token)
-        tokens_queue.put(token)
-        await asyncio.sleep(2.0)
+        try:
+            token = tokens_queue.get_nowait()
+        except QueueEmpty:
+            fill_queue()            
+        else:
+            await update_ticker(token)
+            await asyncio.sleep(2.0)
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

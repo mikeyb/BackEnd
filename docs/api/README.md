@@ -10,6 +10,29 @@ You can connect to ForkDelta's API through this endpoint:
 
  - https://api.forkdelta.com
 
+## Rate Limiting
+
+Please try to limit your calls to the API to a reasonable frequency.
+
+The API currently limits clients to 6 concurrent connections and 12 reconnects per minute per IP address. We reserve the right to adjust these without advanced notice.
+
+The API does not limit the number of `getMarket` and `order` messages the client can send at this time. Protip: subscribe to [this issue](https://github.com/forkdelta/proposals/issues/11) to get updates on when that changes.
+
+Clients that violate rate limits repeatedly may be blocked.
+
+## Best Practices
+### Identify your client
+Make sure to set a custom User Agent for your ForkDelta API client whenever possible. The User Agent string should include the name and version of the client, as well as the client's homepage URL and author's contact (email), like so:
+
+```
+ForkDelta Price Alerts by freeatnet (v0.1.5 (8b0aad6)) (https://project-homepage.com, freeatnet@freeatnet.com)
+```
+
+A custom User Agent string will allow us to reach out to you in case of any issues and will help us debug issues if you reach out for support.
+
+### Backoff on errors
+If you receive a one-off disconnect from the server, you may reconnect right away. However, if you receive multiple disconnects or receive errors when attempting to connect (HTTP statuses >=400), you must delay your next connection attempt. We recommend randomized [exponential backoff](https://en.wikipedia.org/wiki/Exponential_backoff) strategy: `retry_delay = min(((2^n)+random_number_milliseconds), 128)`, where `n` is the retry attempt count, starting at 0.
+
 ## Requests
 
 There are two messages you can send to the ForkDelta websocket API:
@@ -200,11 +223,20 @@ New trades will be emitted as they occur. The data structure of this `trades` ev
 New deposits and withdrawals will be emitted as they occur. The data structure of this `funds` event mirrors that of `market.myFunds` outlined above.
 
 
----
+# API Client Libraries
 
-## More Information
+Below is a (possibly incomplete) list of third-party libraries that can help you work with ForkDelta API:
+
+* **PHP:** [forkdelta-api-wrapper](https://github.com/chetcuti/forkdelta-api-wrapper) by @chetcuti
+* **Python:** [etherdelta](https://github.com/miguelmota/py-etherdelta) by @miguelmota offers ForkDelta client as an option
+
+These are third-party libraries; as such, ForkDelta has no control over them and offers no support for them. You should review their source code to make sure they are bug-free, safe, secure, and fit for your use.
+
+If you would like to add your library to this list, let us know by opening an issue.
+
+# More Information
 For more information, or to see how this websocket server works, take a look at [websocket_server.py](https://github.com/forkdelta/backend-replacement/blob/master/app/services/websocket_server.py)
 
----
+
 
 <small>Special thanks to Zack for his original API and documentation: https://github.com/etherdelta/etherdelta.github.io/blob/master/docs/API.md</small>
